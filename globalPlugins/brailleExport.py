@@ -14,6 +14,7 @@ import addonHandler
 import gui
 import config
 import logHandler
+import api  # 引入 NVDA 的 api 模組以使用剪貼簿功能
 
 addonHandler.initTranslation()
 log = logHandler.log
@@ -48,7 +49,7 @@ def cells_to_brf(cells):
     for c in cells:
         bits = c & 0x3F
         if bits == 0:
-            parts.append(' ')   # 修正：BRF 檔案是 ASCII，空白格必須用標準空白鍵，不能用 Unicode \u2800
+            parts.append(' ')   
         else:
             parts.append(_NABCC.get(bits, '?'))
     return ''.join(parts).rstrip(' ')
@@ -63,6 +64,7 @@ CONFIG_SECTION = "brailleExport"
 CONFIG_DEFAULTS = {
     "exportDir": _default_export_dir(),
     "exportFormat": "unicode",
+    "exportDestination": "clipboard",  # 已將預設修改為剪貼簿 (clipboard)
     "addTimestamp": "True",
     "cellsPerLine": "40",
 }
@@ -104,7 +106,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         self._hooked = False
         self._hookBraille()
         self._buildMenu()
-        log.info("[brailleExport] loaded OK (Smart Cursor Filter & ASCII Fix)")
+        log.info("[brailleExport] loaded OK (Default: Clipboard)")
 
     def _hookBraille(self):
         try:
@@ -132,7 +134,6 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             self._hookBraille()
 
     def _process_new_frame(self, cl):
-        """智慧型去重複與游標過濾演算法"""
         if not self._buffer:
             self._buffer.append(cl)
             return
@@ -184,9 +185,6 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         except Exception as e:
             pass
 
-    # ──────────────────────────────────────────
-    # NVDA 系統匣選單
-    # ──────────────────────────────────────────
     def _buildMenu(self):
         try:
             self._menu = wx.Menu()
@@ -205,9 +203,6 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         except Exception as e:
             log.error(f"[brailleExport] buildMenu error: {e}")
 
-    # ──────────────────────────────────────────
-    # 快捷鍵腳本
-    # ──────────────────────────────────────────
     @script(description="立即匯出目前點字顯示畫面快照", gesture="kb:NVDA+shift+c")
     def script_exportCurrent(self, gesture):
         self._exportCurrentCells()
@@ -223,9 +218,6 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
     def script_openSettings(self, gesture):
         wx.CallAfter(self._openSettingsDlg)
 
-    # ──────────────────────────────────────────
-    # 選單事件
-    # ──────────────────────────────────────────
     def _onExportCurrent(self, evt):
         wx.CallAfter(self._exportCurrentCells)
 
@@ -245,9 +237,6 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         dlg.Destroy()
         gui.mainFrame.postPopup()
 
-    # ──────────────────────────────────────────
-    # 核心功能
-    # ──────────────────────────────────────────
     def _exportCurrentCells(self):
         self._ensureHook()
         try:
@@ -263,7 +252,6 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                     if buf.cursorPos is not None and buf.windowPos is not None:
                         cursor_idx = buf.cursorPos - buf.windowPos
                         if 0 <= cursor_idx < len(cells):
-                            # 針對游標所在的那一格去除第 7、8 點
                             cells[cursor_idx] &= 0x3F
             except Exception:
                 pass
@@ -271,11 +259,22 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             if not any(c != 0 for c in cells):
                 ui.message("目前點字顯示器為空白。")
                 return
-            path = self._buildPath("snapshot")
-            self._writeFile(path, [cells])
-            ui.message(f"已匯出：{path}")
+                
+            text = self._generateText([cells])
+            dest = _cfg_str("exportDestination")
+            
+            if dest == "clipboard":
+                if api.copyToClip(text.strip()):
+                    ui.message("快照已複製到剪貼簿。")
+                else:
+                    ui.message("複製到剪貼簿失敗。")
+            else:
+                path = self._buildPath("snapshot")
+                self._writeFile(path, text)
+                ui.message(f"已匯出：{path}")
+                
         except Exception as e:
-            ui.message(f"匯出失敗：{e}")
+            ui.message(f"處理失敗：{e}")
 
     def _startRecord(self):
         self._ensureHook()
@@ -297,27 +296,29 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             return
         self._recording = False
         if not self._buffer:
-            ui.message("緩衝區為空，未產生檔案。")
+            ui.message("緩衝區為空，未產生內容。")
             return
-        path = self._buildPath("record")
+            
         n = len(self._buffer)
-        self._writeFile(path, self._buffer)
+        text = self._generateText(self._buffer)
         self._buffer.clear()
-        ui.message(f"錄製完成，共 {n} 幀，已匯出：{path}")
+        
+        dest = _cfg_str("exportDestination")
+        if dest == "clipboard":
+            if api.copyToClip(text.strip()):
+                ui.message(f"錄製完成，共 {n} 幀，已複製到剪貼簿。")
+            else:
+                ui.message("複製到剪貼簿失敗。")
+        else:
+            path = self._buildPath("record")
+            self._writeFile(path, text)
+            ui.message(f"錄製完成，共 {n} 幀，已匯出：{path}")
 
     # ──────────────────────────────────────────
-    # 檔案產生
+    # 產生文字與檔案
     # ──────────────────────────────────────────
-    def _buildPath(self, prefix):
-        export_dir = _cfg_str("exportDir")
-        fmt = _cfg_str("exportFormat")
-        add_ts = _cfg_bool("addTimestamp")
-        ts = f"_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}" if add_ts else ""
-        ext = ".txt" if fmt == "unicode" else ".brf"
-        os.makedirs(export_dir, exist_ok=True)
-        return os.path.join(export_dir, f"braille_{prefix}{ts}{ext}")
-
-    def _writeFile(self, path, frames):
+    def _generateText(self, frames):
+        """將紀錄的 frames 轉換為完整的格式化文字"""
         fmt = _cfg_str("exportFormat")
         cells_per_line = _cfg_int("cellsPerLine")
         lines = []
@@ -327,11 +328,24 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                 chunk = raw[i:i + cells_per_line]
                 if chunk.strip("\u2800 "):
                     lines.append(chunk)
-        content = "\n".join(lines) + "\n"
+        return "\n".join(lines) + "\n"
+
+    def _buildPath(self, prefix):
+        export_dir = _cfg_str("exportDir")
+        fmt = _cfg_str("exportFormat")
+        add_ts = _cfg_bool("addTimestamp")
+        ts = f"_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}" if add_ts else ""
+        ext = ".txt" if fmt == "unicode" else ".brf"
+        os.makedirs(export_dir, exist_ok=True)
+        return os.path.join(export_dir, f"braille_{prefix}{ts}{ext}")
+
+    def _writeFile(self, path, content):
+        """將文字寫入實體檔案"""
+        fmt = _cfg_str("exportFormat")
         enc = "utf-8" if fmt == "unicode" else "ascii"
         with open(path, "w", encoding=enc, newline="\r\n") as f:
             f.write(content)
-        log.info(f"[brailleExport] written {len(lines)} lines → {path}")
+        log.info(f"[brailleExport] written to {path}")
 
     def terminate(self):
         self._recording = False
@@ -352,7 +366,20 @@ class BrailleExportSettingsDialog(wx.Dialog):
         super().__init__(parent, title="點字輸出匯出 — 設定")
         sizer = wx.BoxSizer(wx.VERTICAL)
 
-        dirBox = wx.StaticBox(self, label="匯出目錄")
+        # ── 輸出目標 ──
+        destBox = wx.StaticBox(self, label="輸出目標")
+        destSizer = wx.StaticBoxSizer(destBox, wx.HORIZONTAL)
+        dest = _cfg_str("exportDestination")
+        self._radioFile = wx.RadioButton(self, label="儲存成檔案", style=wx.RB_GROUP)
+        self._radioClipboard = wx.RadioButton(self, label="複製到剪貼簿")
+        self._radioFile.SetValue(dest != "clipboard")
+        self._radioClipboard.SetValue(dest == "clipboard")
+        destSizer.Add(self._radioFile, 0, wx.ALL, 4)
+        destSizer.Add(self._radioClipboard, 0, wx.ALL, 4)
+        sizer.Add(destSizer, 0, wx.EXPAND | wx.ALL, 8)
+
+        # ── 匯出目錄 ──
+        dirBox = wx.StaticBox(self, label="匯出目錄 (僅存成檔案時有效)")
         dirSizer = wx.StaticBoxSizer(dirBox, wx.HORIZONTAL)
         self._dirCtrl = wx.TextCtrl(self, value=_cfg_str("exportDir"), size=(320, -1))
         browseBtn = wx.Button(self, label="瀏覽(&B)…")
@@ -361,21 +388,24 @@ class BrailleExportSettingsDialog(wx.Dialog):
         dirSizer.Add(browseBtn, 0, wx.ALL, 4)
         sizer.Add(dirSizer, 0, wx.EXPAND | wx.ALL, 8)
 
-        fmtBox = wx.StaticBox(self, label="匯出格式")
+        # ── 格式 ──
+        fmtBox = wx.StaticBox(self, label="文字格式")
         fmtSizer = wx.StaticBoxSizer(fmtBox, wx.VERTICAL)
         fmt = _cfg_str("exportFormat")
-        self._radioUnicode = wx.RadioButton(self, label="Unicode 點字文字 (.txt)  ⠓⠑⠇⠇⠕", style=wx.RB_GROUP)
-        self._radioBrf = wx.RadioButton(self, label="BRF ASCII 點字 (.brf)  可送壓印機")
+        self._radioUnicode = wx.RadioButton(self, label="Unicode 點字文字  ⠓⠑⠇⠇⠕", style=wx.RB_GROUP)
+        self._radioBrf = wx.RadioButton(self, label="BRF ASCII 點字  可送壓印機")
         self._radioUnicode.SetValue(fmt == "unicode")
         self._radioBrf.SetValue(fmt == "brf")
         fmtSizer.Add(self._radioUnicode, 0, wx.ALL, 4)
         fmtSizer.Add(self._radioBrf, 0, wx.ALL, 4)
         sizer.Add(fmtSizer, 0, wx.EXPAND | wx.ALL, 8)
 
+        # ── 時間戳記 ──
         self._tsCheck = wx.CheckBox(self, label="檔名加入時間戳記(&T)")
         self._tsCheck.SetValue(_cfg_bool("addTimestamp"))
         sizer.Add(self._tsCheck, 0, wx.ALL, 8)
 
+        # ── 每行格數 ──
         rowSizer = wx.BoxSizer(wx.HORIZONTAL)
         rowSizer.Add(wx.StaticText(self, label="每行格數(&C)："), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
         self._cellsSpin = wx.SpinCtrl(self, min=10, max=200, initial=_cfg_int("cellsPerLine"))
@@ -404,6 +434,7 @@ class BrailleExportSettingsDialog(wx.Dialog):
 
     def _onOk(self, evt):
         sec = _cfg()
+        sec["exportDestination"] = "clipboard" if self._radioClipboard.GetValue() else "file"
         sec["exportDir"] = self._dirCtrl.GetValue()
         sec["exportFormat"] = "unicode" if self._radioUnicode.GetValue() else "brf"
         sec["addTimestamp"] = str(self._tsCheck.GetValue())
