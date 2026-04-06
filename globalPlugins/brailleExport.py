@@ -393,7 +393,7 @@ class BrailleExportSettingsDialog(wx.Dialog):
         fmtSizer = wx.StaticBoxSizer(fmtBox, wx.VERTICAL)
         fmt = _cfg_str("exportFormat")
         self._radioUnicode = wx.RadioButton(self, label="Unicode 點字文字  ⠃⠗⠁⠊⠇⠇⠑", style=wx.RB_GROUP)
-        self._radioBrf = wx.RadioButton(self, label="BRF ASCII 點字  可送點字印表")
+        self._radioBrf = wx.RadioButton(self, label="BRF ASCII 點字  可送點字印表機")
         self._radioUnicode.SetValue(fmt == "unicode")
         self._radioBrf.SetValue(fmt == "brf")
         fmtSizer.Add(self._radioUnicode, 0, wx.ALL, 4)
