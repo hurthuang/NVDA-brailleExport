@@ -392,8 +392,8 @@ class BrailleExportSettingsDialog(wx.Dialog):
         fmtBox = wx.StaticBox(self, label="文字格式")
         fmtSizer = wx.StaticBoxSizer(fmtBox, wx.VERTICAL)
         fmt = _cfg_str("exportFormat")
-        self._radioUnicode = wx.RadioButton(self, label="Unicode 點字文字  ⠓⠑⠇⠇⠕", style=wx.RB_GROUP)
-        self._radioBrf = wx.RadioButton(self, label="BRF ASCII 點字  可送壓印機")
+        self._radioUnicode = wx.RadioButton(self, label="Unicode 點字文字  ⠃⠗⠁⠊⠇⠇⠑", style=wx.RB_GROUP)
+        self._radioBrf = wx.RadioButton(self, label="BRF ASCII 點字  可送點字印表")
         self._radioUnicode.SetValue(fmt == "unicode")
         self._radioBrf.SetValue(fmt == "brf")
         fmtSizer.Add(self._radioUnicode, 0, wx.ALL, 4)
@@ -407,7 +407,7 @@ class BrailleExportSettingsDialog(wx.Dialog):
 
         # ── 每行格數 ──
         rowSizer = wx.BoxSizer(wx.HORIZONTAL)
-        rowSizer.Add(wx.StaticText(self, label="每行格數(&C)："), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        rowSizer.Add(wx.StaticText(self, label="每行方數(&C)："), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
         self._cellsSpin = wx.SpinCtrl(self, min=10, max=200, initial=_cfg_int("cellsPerLine"))
         rowSizer.Add(self._cellsSpin, 0)
         sizer.Add(rowSizer, 0, wx.ALL, 8)
