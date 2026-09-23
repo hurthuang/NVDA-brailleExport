@@ -15,9 +15,96 @@ import gui
 import config
 import logHandler
 import api  # 引入 NVDA 的 api 模組以使用剪貼簿功能
+import threading
+import urllib.request
+import json
+import re
+import tempfile
 
 addonHandler.initTranslation()
 log = logHandler.log
+
+# ──────────────────────────────────────────────
+# 檢查更新
+# ──────────────────────────────────────────────
+GITHUB_LATEST_API = "https://api.github.com/repos/hurthuang/NVDA-brailleExport/releases/latest"
+
+def _parse_version(v):
+    nums = [int(p) for p in re.findall(r'\d+', v)]
+    nums += [0] * (4 - len(nums))
+    return tuple(nums[:4])
+
+def _current_version():
+    try:
+        return addonHandler.getCodeAddon().manifest.get("version", "0")
+    except Exception:
+        return "0"
+
+def _check_update_worker(silent=False):
+    """silent=True 用於開機自動檢查：沒有新版本時完全不提示，避免每次啟動都念一次。"""
+    current = _current_version()
+    req = urllib.request.Request(
+        GITHUB_LATEST_API,
+        headers={"User-Agent": "brailleExport-update-check", "Accept": "application/vnd.github+json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        if not silent:
+            wx.CallAfter(ui.message, f"檢查更新失敗：{e}")
+        return
+
+    latest = data.get("tag_name", "").lstrip("vV")
+    if _parse_version(latest) <= _parse_version(current):
+        if not silent:
+            wx.CallAfter(ui.message, f"目前已是最新版本（v{current}）。")
+        return
+
+    asset_url = None
+    for asset in data.get("assets", []):
+        if asset.get("name", "").endswith(".nvda-addon"):
+            asset_url = asset.get("browser_download_url")
+            break
+    release_url = data.get("html_url", "https://github.com/hurthuang/NVDA-brailleExport/releases")
+    wx.CallAfter(_prompt_update, latest, current, asset_url, release_url)
+
+def _prompt_update(latest, current, asset_url, release_url):
+    """在主執行緒彈出確認對話框；使用者按是才下載並開啟安裝。"""
+    if not asset_url:
+        ui.browseableMessage(
+            f"有新版本可更新：v{latest}（目前使用：v{current}）\n\n下載頁面：\n{release_url}",
+            "brailleExport 有新版本",
+        )
+        return
+    result = gui.messageBox(
+        f"發現新版本 v{latest}（目前使用：v{current}）。\n\n是否立即下載並安裝？",
+        "brailleExport 有新版本",
+        wx.YES_NO | wx.ICON_QUESTION,
+    )
+    if result == wx.YES:
+        ui.message("正在下載更新…")
+        threading.Thread(target=_download_and_install_worker, args=(asset_url,), daemon=True).start()
+
+def _download_and_install_worker(asset_url):
+    req = urllib.request.Request(asset_url, headers={"User-Agent": "brailleExport-update-check"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            content = resp.read()
+    except Exception as e:
+        wx.CallAfter(ui.message, f"下載更新失敗：{e}")
+        return
+
+    tmp_path = os.path.join(tempfile.gettempdir(), "brailleExport-update.nvda-addon")
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(content)
+    except Exception as e:
+        wx.CallAfter(ui.message, f"儲存更新檔失敗：{e}")
+        return
+
+    # 交給系統開啟，觸發 NVDA 原生的附加元件安裝確認流程
+    wx.CallAfter(os.startfile, tmp_path)
 
 # ──────────────────────────────────────────────
 # Cell 轉換
@@ -107,6 +194,10 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         self._hookBraille()
         self._buildMenu()
         log.info("[brailleExport] loaded OK (Default: Clipboard)")
+        # 啟動時背景自動檢查一次更新，延遲幾秒避免搶在 NVDA 啟動流程前面；有新版才提示，沒有則靜默
+        wx.CallLater(5000, lambda: threading.Thread(
+            target=_check_update_worker, kwargs={"silent": True}, daemon=True
+        ).start())
 
     def _hookBraille(self):
         try:
@@ -197,8 +288,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             self._menu.AppendSeparator()
             item = self._menu.Append(wx.ID_ANY, "設定(&O)…")
             gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self._onSettings, item)
-            self._mainMenuItem = gui.mainFrame.sysTrayIcon.menu.Insert(
-                2, wx.ID_ANY, "點字匯出(&X)", self._menu
+            self._mainMenuItem = gui.mainFrame.sysTrayIcon.menu.AppendSubMenu(
+                self._menu, "點字匯出(&X)"
             )
         except Exception as e:
             log.error(f"[brailleExport] buildMenu error: {e}")
